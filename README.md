@@ -1,166 +1,88 @@
-# NetHunter kernel for the Google Pixel (sailfish)
+# nethunter-pixel-sailfish
 
-A Kali NetHunter kernel for the first-generation Google Pixel, built against the
-LineageOS 22.2 / Android 15 `android_kernel_google_marlin` tree (msm-4.4,
-4.4.302). Ships as an AnyKernel3 zip.
+Kali NetHunter kernel for the Google Pixel 1 (sailfish), built against the
+LineageOS 22.2 / Android 15 marlin tree (msm-4.4, 4.4.302). Ships as an
+AnyKernel3 zip.
 
-Kernel string: `4.4.302-willuhmjs-NetHunter`
+    4.4.302-willuhmjs-NetHunter
 
-## What's in it
+## Features
 
-**Wireless injection** — mac80211 with the NetHunter injection patches, plus
-monitor-mode-capable USB adapter drivers built as modules:
+- mac80211 with the NetHunter injection patches
+- USB wifi adapters as modules: rtw88 (8822BU/8822CU/8821CU/8723DU),
+  rtl8812au, rtl8xxxu, ath9k_htc, carl9170, rt2800usb, mt7601u, zd1211rw and
+  the usual others
+- rtw88 firmware is built into the kernel, since /vendor is verity protected
+- HID / BadUSB via gadget configfs
+- Bluetooth, USB serial (CH341, CP210x, FTDI, PL2303)
+- netfilter targets for the MITM tools (TPROXY, NAT, REDIRECT, bridge-nf)
 
-| family | driver | chips |
-| --- | --- | --- |
-| Realtek | `rtw88` | 8822BU, 8822CU, 8821CU, 8723DU |
-| Realtek | `rtl8812au` | 8812AU, 8814AU, 8821AU |
-| Realtek | `rtl8xxxu`, `rtl8187`, `rtl8192cu` | older RTL USB sticks |
-| Atheros | `ath9k_htc`, `carl9170` | AR9271, AR7010, AR9170 |
-| Ralink / MediaTek | `rt2800usb`, `rt73usb`, `rt2500usb`, `mt7601u` | |
-| misc | `zd1211rw`, `at76c50x`, `p54usb`, `libertas`, `rsi_91x` | |
+Adapter drivers are modules because boot is only 32 MB and the kernel already
+fills 21 MB of it.
 
-rtw88 firmware is linked into the kernel via `CONFIG_EXTRA_FIRMWARE` rather than
-dropped in `/vendor`, because `/vendor` is dm-verity protected on LineageOS.
+## Build
 
-**HID / BadUSB** — USB gadget configfs with `f_hid`, plus ACM, ECM, RNDIS, mass
-storage and serial functions.
+    ./setup.sh     # clone the pinned LOS tree, fetch toolchains, patch
+    ./build.sh     # compile
+    ./package.sh   # make the zip
 
-**Other** — Bluetooth (RFCOMM/BNEP/HIDP, `btusb`, `hci_uart`), USB host serial
-(CH341, CP210x, FTDI, PL2303), and the netfilter targets NetHunter's MITM tools
-need (TPROXY, NAT, MASQUERADE, REDIRECT, mangle, raw, bridge-nf).
+CI builds every push; tagging `v*` cuts a release.
 
-The adapter drivers are modules on purpose: `boot` is only 32 MB
-(`BOARD_BOOTIMAGE_PARTITION_SIZE 0x02000000`) and the kernel image is already
-~21 MB compressed, so building them in would not fit.
+## Flash
 
-`nethunter.fragment` is the readable record of every config option that differs
-from stock; `overlay/arch/arm64/configs/nethunter_sailfish_defconfig` is the
-merged result that actually gets built.
+Back up first:
 
-## Building
+    adb shell su -c 'dd if=/dev/block/bootdevice/by-name/boot_a' > boot_a.img
 
-CI builds every push and uploads the zip as an artifact; tagging `v*` cuts a
-release. To build locally:
+From the Magisk app (Modules -> Install from storage) you get the kernel and
+the modules in one step.
 
-```sh
-./setup.sh     # clone the pinned LOS kernel, fetch toolchains, apply patches
-./build.sh     # configure + compile  (./build.sh clean to start over)
-./package.sh   # produce NetHunter-sailfish-<release>.zip
-```
+By recovery sideload you only get the kernel. AnyKernel3 installs the modules
+as a systemless Magisk module and skips that when /data is encrypted, which it
+always is in recovery. So boot the new kernel and then:
 
-`setup.sh` pins the LineageOS tree to a specific commit and fetches the Android
-clang 10.0.4 and GCC 4.9 prebuilts from `kali.download`. It is idempotent — it
-resets the kernel tree to the baseline before re-applying, so it is safe to
-re-run.
+    ./install-modules.sh
 
-### A note on `-mgeneral-regs-only`
+Check it took:
 
-`arch/arm64/Makefile` in this tree drops `-mgeneral-regs-only` under clang as a
-workaround for [llvm.org/pr30792](https://bugs.llvm.org/show_bug.cgi?id=30792),
-substituting `-mno-implicit-float`. That is not equivalent, and on clang 10 it
-produces a kernel that boots and then panics at random.
+    adb shell uname -r
+    adb shell ls /system/lib/modules | wc -l
 
-Without the flag, a variadic function still has to build an AAPCS64 FP register
-save area. Clang responds by splitting the frame — it stores the GP vararg
-registers at negative offsets from `x29` and only allocates that space in a
-later `stp q0, q1, [sp,#-256]!`:
+insmod wants absolute paths, and reports unresolved symbols as "No such file
+or directory", so load dependencies first (ath, ath9k_hw, ath9k_common before
+ath9k_htc) or use `modprobe -d /system/lib/modules`.
 
-```
-seq_printf:
-    stp  x29, x30, [sp,#-32]!     ; sp -= 32
-    mov  x29, sp                  ; x29 == sp
-    stp  x2, x3, [x29,#-120]      ; <-- 120 bytes BELOW sp
-    stp  x4, x5, [x29,#-104]      ; <-- below sp
-    stp  x6, x7, [x29,#-88]       ; <-- below sp
-    stp  q0, q1, [sp,#-256]!      ; space finally allocated
-```
+To recover, `fastboot flash boot_a boot_a.img` from the bootloader.
 
-arm64 Linux has no red zone, and 4.4 has no separate IRQ stack. An interrupt
-taken in that three-instruction window pushes its `pt_regs` straight over the
-saved varargs. Every printf-style call in the kernel is affected. The symptom
-seen here was an oops in `strnlen` under `vsnprintf` — reading
-`/proc/<pid>/maps` picked up a stale userspace pointer for a `%s` whose argument
-was a string literal.
+## Two patches worth knowing about
 
-pr30792 was fixed long ago, so the patch series restores the flag for clang, and
-`build.sh` fails the build if FP/SIMD instructions appear outside the
-explicitly NEON-aware crypto and `fpsimd` routines.
+**`-mgeneral-regs-only`.** The LOS tree drops this flag under clang, working
+around llvm.org/pr30792, and substitutes `-mno-implicit-float`. Those are not
+equivalent. Without it clang builds an FP register save area for variadic
+functions and splits the frame, storing the GP varargs below sp before
+allocating the space. arm64 has no red zone and 4.4 has no IRQ stack, so an
+interrupt in that window lands on top of them. Every printf-style call in the
+kernel is affected; it showed up as random oopses in vsnprintf. pr30792 was
+fixed years ago, so the patch restores the flag, and build.sh fails if FP/SIMD
+shows up outside the NEON crypto and fpsimd routines.
 
-### A note on `want_initramfs`
-
-`boot` is a fixed 32 MB partition and the kernel already fills 21 MB of it, so
-the repack has very little slack. AnyKernel3 spends it all if you let it: when
-Magisk is installed it decompresses the incoming kernel in order to hexpatch
-`skip_initramfs` to `want_initramfs`, then hands a raw `Image` to `magiskboot
-repack`, which re-compresses at the default lz4 level rather than the `lz4 -9`
-the kernel build used. That is 16,293,545 bytes instead of 13,504,389 — enough
-to put the image 512,000 bytes past the partition and abort the install with
-*"New image larger than target partition"*.
-
-So the patch series applies that rename in `init/initramfs.c` at build time.
-The token is inert on this device — it never appears on the command line, and
-`CONFIG_INITRAMFS_IGNORE_SKIP_FLAG=y` pins `do_skip_initramfs` to 0 regardless
-— but with the string already renamed AnyKernel3's hexpatch matches nothing,
-so it takes its "no patching required" path and writes the kernel back
-untouched and still `lz4 -9`. Magisk detection, `.magisk` extraction, dtb
-verity patching and the systemless module helper all still run.
-
-`package.sh` computes the resulting boot image size and fails if it would not
-fit, so this cannot get as far as the phone again.
-
-## Flashing
-
-The zip is AnyKernel3, `IS_SLOT_DEVICE=1`, and only replaces the kernel — it
-leaves the ramdisk alone, so an existing Magisk install survives.
-
-Back up your current boot image first:
-
-```sh
-adb shell su -c 'dd if=/dev/block/bootdevice/by-name/boot_a' > boot_a.img
-adb shell su -c 'dd if=/dev/block/bootdevice/by-name/boot_b' > boot_b.img
-```
-
-Then flash it either way:
-
-**From the Magisk app** (Modules → Install from storage) — installs the kernel
-and the modules in one go.
-
-**By recovery sideload** — `adb reboot sideload`, then
-`adb sideload NetHunter-sailfish-*.zip`. This installs the kernel but *not*
-the modules: AnyKernel3 puts them in a systemless Magisk module, and it skips
-that when it cannot see a decrypted `/data`, which is the case in recovery on
-an FBE device. Boot the new kernel and finish the job with:
-
-```sh
-./install-modules.sh
-```
-
-Either way, reboot and confirm:
-
-```sh
-adb shell uname -a          # expect 4.4.302-willuhmjs-NetHunter
-adb shell 'ls /system/lib/modules | wc -l'
-adb shell su -c 'insmod /system/lib/modules/rtw88_core.ko'   # absolute path
-```
-
-`insmod` reports unresolved symbols as "No such file or directory", so load
-dependencies first (`ath`, `ath9k_hw`, `ath9k_common` before `ath9k_htc`) or
-use `modprobe -d /system/lib/modules`.
-
-To recover, `fastboot flash boot_a boot_a.img` (and `boot_b`) from the
-bootloader.
+**`want_initramfs`.** AnyKernel3 decompresses the kernel to hexpatch
+`skip_initramfs` when Magisk is present, then lets magiskboot recompress it at
+default lz4 instead of lz4 -9. That is 2.8 MB bigger and puts the boot image
+512000 bytes over the partition, so the flash aborts. Doing the rename in
+init/initramfs.c at build time means the hexpatch finds nothing and AnyKernel3
+writes the kernel through untouched. The token is inert here anyway, since
+CONFIG_INITRAMFS_IGNORE_SKIP_FLAG=y. package.sh also fails now if the image
+would not fit.
 
 ## Layout
 
-```
-env.sh                 toolchain paths and the kmake helper
-setup.sh               fetch sources + toolchains, apply patches and overlay
-build.sh               configure, compile, check for stray FP/SIMD
-package.sh             flatten modules, depmod, size-check, build the zip
-install-modules.sh     push modules as a Magisk module (for sideload flashes)
-nethunter.fragment     readable list of config deltas from stock
-patches/               patches against the pinned LineageOS tree
-overlay/               files copied verbatim into the kernel tree
-ak3-sailfish/          AnyKernel3 template
-```
+    env.sh              toolchain paths, kmake helper
+    setup.sh            fetch sources and toolchains, apply patches
+    build.sh            compile
+    package.sh          modules, depmod, size check, zip
+    install-modules.sh  push modules as a Magisk module
+    nethunter.fragment  config deltas from stock
+    patches/            patches against the pinned LOS tree
+    overlay/            files copied into the kernel tree
+    ak3-sailfish/       AnyKernel3 template
