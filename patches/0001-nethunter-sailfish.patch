@@ -8086,6 +8086,39 @@ index 7740940b..b6d6f8b3 100644
  /**
   * ieee80211_iter_chan_contexts_atomic - iterate channel contexts
   * @hw: pointre obtained from ieee80211_alloc_hw().
+diff --git a/init/initramfs.c b/init/initramfs.c
+index 67938904..4acb593b 100644
+--- a/init/initramfs.c
++++ b/init/initramfs.c
+@@ -615,7 +615,27 @@ static int __init skip_initramfs_param(char *str)
+ 	do_skip_initramfs = !IS_ENABLED(CONFIG_INITRAMFS_IGNORE_SKIP_FLAG);
+ 	return 1;
+ }
+-__setup("skip_initramfs", skip_initramfs_param);
++/*
++ * Named "want_initramfs" rather than "skip_initramfs" on purpose.
++ *
++ * sailfish never passes this on the kernel command line, and
++ * CONFIG_INITRAMFS_IGNORE_SKIP_FLAG=y pins do_skip_initramfs to 0 even if it
++ * did, so the token is inert here either way. What the name does change is
++ * AnyKernel3: when it sees Magisk installed it decompresses the incoming
++ * kernel to hexpatch this exact string to "want_initramfs", and then has to
++ * hand a raw Image back to "magiskboot repack", which re-compresses it at the
++ * default lz4 level instead of the lz4 -9 the kernel build used. That costs
++ * 2.8 MB and pushes the repacked boot image 512000 bytes past the 32 MB
++ * partition, so the install aborts with "New image larger than target
++ * partition".
++ *
++ * Applying Magisk's rename here at build time makes that hexpatch find
++ * nothing, so AnyKernel3 takes its "no patching required" path and restores
++ * the kernel untouched and still lz4 -9 compressed. Magisk detection, the
++ * .magisk extraction, the dtb verity patching and the systemless module
++ * helper all still run; only the pointless decompress/recompress goes away.
++ */
++__setup("want_initramfs", skip_initramfs_param);
+ 
+ static int __init populate_rootfs(void)
+ {
 diff --git a/net/mac80211/cfg.c b/net/mac80211/cfg.c
 index c5be6bf2..6e1b06b0 100644
 --- a/net/mac80211/cfg.c

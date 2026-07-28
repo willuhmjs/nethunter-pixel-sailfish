@@ -87,6 +87,28 @@ pr30792 was fixed long ago, so the patch series restores the flag for clang, and
 `build.sh` fails the build if FP/SIMD instructions appear outside the
 explicitly NEON-aware crypto and `fpsimd` routines.
 
+### A note on `want_initramfs`
+
+`boot` is a fixed 32 MB partition and the kernel already fills 21 MB of it, so
+the repack has very little slack. AnyKernel3 spends it all if you let it: when
+Magisk is installed it decompresses the incoming kernel in order to hexpatch
+`skip_initramfs` to `want_initramfs`, then hands a raw `Image` to `magiskboot
+repack`, which re-compresses at the default lz4 level rather than the `lz4 -9`
+the kernel build used. That is 16,293,545 bytes instead of 13,504,389 — enough
+to put the image 512,000 bytes past the partition and abort the install with
+*"New image larger than target partition"*.
+
+So the patch series applies that rename in `init/initramfs.c` at build time.
+The token is inert on this device — it never appears on the command line, and
+`CONFIG_INITRAMFS_IGNORE_SKIP_FLAG=y` pins `do_skip_initramfs` to 0 regardless
+— but with the string already renamed AnyKernel3's hexpatch matches nothing,
+so it takes its "no patching required" path and writes the kernel back
+untouched and still `lz4 -9`. Magisk detection, `.magisk` extraction, dtb
+verity patching and the systemless module helper all still run.
+
+`package.sh` computes the resulting boot image size and fails if it would not
+fit, so this cannot get as far as the phone again.
+
 ## Flashing
 
 The zip is AnyKernel3, `IS_SLOT_DEVICE=1`, and only replaces the kernel — it
@@ -99,13 +121,32 @@ adb shell su -c 'dd if=/dev/block/bootdevice/by-name/boot_a' > boot_a.img
 adb shell su -c 'dd if=/dev/block/bootdevice/by-name/boot_b' > boot_b.img
 ```
 
-Then either flash the zip from a custom recovery, or install it from the Magisk
-app (Modules → Install from storage). Reboot, and confirm with:
+Then flash it either way:
+
+**From the Magisk app** (Modules → Install from storage) — installs the kernel
+and the modules in one go.
+
+**By recovery sideload** — `adb reboot sideload`, then
+`adb sideload NetHunter-sailfish-*.zip`. This installs the kernel but *not*
+the modules: AnyKernel3 puts them in a systemless Magisk module, and it skips
+that when it cannot see a decrypted `/data`, which is the case in recovery on
+an FBE device. Boot the new kernel and finish the job with:
+
+```sh
+./install-modules.sh
+```
+
+Either way, reboot and confirm:
 
 ```sh
 adb shell uname -a          # expect 4.4.302-willuhmjs-NetHunter
-adb shell 'ls /system/lib/modules | head'
+adb shell 'ls /system/lib/modules | wc -l'
+adb shell su -c 'insmod /system/lib/modules/rtw88_core.ko'   # absolute path
 ```
+
+`insmod` reports unresolved symbols as "No such file or directory", so load
+dependencies first (`ath`, `ath9k_hw`, `ath9k_common` before `ath9k_htc`) or
+use `modprobe -d /system/lib/modules`.
 
 To recover, `fastboot flash boot_a boot_a.img` (and `boot_b`) from the
 bootloader.
@@ -116,7 +157,8 @@ bootloader.
 env.sh                 toolchain paths and the kmake helper
 setup.sh               fetch sources + toolchains, apply patches and overlay
 build.sh               configure, compile, check for stray FP/SIMD
-package.sh             flatten modules, depmod, build the AnyKernel3 zip
+package.sh             flatten modules, depmod, size-check, build the zip
+install-modules.sh     push modules as a Magisk module (for sideload flashes)
 nethunter.fragment     readable list of config deltas from stock
 patches/               patches against the pinned LineageOS tree
 overlay/               files copied verbatim into the kernel tree

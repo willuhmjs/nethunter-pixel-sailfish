@@ -42,6 +42,21 @@ echo ":: modules         $(ls "$MODDIR"/*.ko | wc -l) ($(du -sh "$MODDIR" | cut 
 cp -f "$IMAGE" "$AK3/Image.lz4-dtb"
 echo ":: kernel image    $(du -h "$AK3/Image.lz4-dtb" | cut -f1)"
 
+# boot is a fixed 32 MB raw partition (BOARD_BOOTIMAGE_PARTITION_SIZE
+# 0x02000000) and AnyKernel3 only finds out it does not fit after it has
+# already unpacked the live boot image on the phone. Do the arithmetic here
+# instead: page-aligned header + kernel + the stock ramdisk, which we reuse
+# untouched. Anything over and the flash aborts in recovery.
+BOOT_MAX=33554432
+RAMDISK_SZ=9343984	# LOS 22 sailfish boot.img, xz
+page_round() { echo $(( ( ($1 + 4095) / 4096 ) * 4096 )); }
+boot_sz=$(( 4096 + $(page_round "$(stat -c%s "$IMAGE")") + $(page_round $RAMDISK_SZ) ))
+if [ "$boot_sz" -gt "$BOOT_MAX" ]; then
+	echo "!! boot image would be $boot_sz bytes, $((boot_sz - BOOT_MAX)) over the partition" >&2
+	exit 1
+fi
+echo ":: boot image      $boot_sz of $BOOT_MAX bytes ($(( (BOOT_MAX - boot_sz) / 1024 )) KiB spare)"
+
 # --- zip -------------------------------------------------------------------
 rm -f "$ZIP"
 ( cd "$AK3" && zip -r9 "$ZIP" . -x '.git*' '*/.git*' >/dev/null )
