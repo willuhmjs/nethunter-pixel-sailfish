@@ -39,7 +39,11 @@ the modules in one step.
 
 By recovery sideload you only get the kernel. AnyKernel3 installs the modules
 as a systemless Magisk module and skips that when /data is encrypted, which it
-always is in recovery. So boot the new kernel and then:
+always is in recovery.
+
+To get the modules after a sideload, boot the new kernel and then either
+install the same zip from the Magisk app (it reflashes the same kernel and
+picks up the modules on the way through), or from a PC run:
 
     ./install-modules.sh
 
