@@ -1,0 +1,56 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  kernel:
+    # 22.04, not 24.04: the Android clang-10 prebuilt still links against
+    # libtinfo5, which noble no longer ships.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libtinfo5 kmod lz4 zip \
+            ca-certificates curl xz-utils
+
+      - name: Cache toolchains
+        uses: actions/cache@v4
+        with:
+          path: toolchains
+          key: toolchains-clang-10.0.4-gcc-4.9
+
+      - name: Fetch sources and toolchains
+        run: ./setup.sh
+
+      - name: Build
+        run: ./build.sh
+
+      - name: Package AnyKernel3 zip
+        run: ./package.sh
+
+      - name: Record what was built
+        id: meta
+        run: echo "release=$(cat out/include/config/kernel.release)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NetHunter-sailfish-${{ steps.meta.outputs.release }}
+          path: NetHunter-sailfish-*.zip
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: NetHunter-sailfish-*.zip
+          generate_release_notes: true

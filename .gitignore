@@ -1,0 +1,17 @@
+# Kernel source is cloned by setup.sh / CI, not vendored
+src/
+# Toolchains are fetched from kali.download, ~2 GB
+toolchains/
+# Build output
+out/
+staging/
+modflat/
+# Staged artifacts
+ak3-sailfish/Image.lz4-dtb
+ak3-sailfish/modules/
+# Device images and flashable zips
+*.img
+*.img.gz
+*.zip
+backup/
+diag/
